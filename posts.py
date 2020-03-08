@@ -1,21 +1,19 @@
 from flask import *
 from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy import create_engine, Column, Integer, String, ForeignKey, exists, and_
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker, relationship
-
-
+from sqlalchemy.orm import sessionmaker, relationship, load_only
+from datetime import datetime
+from sqlalchemy.sql import func
+from sqlalchemy import inspect
+from marshmallow import Schema, fields, pprint
 import os
 
-
-Base = declarative_base()
 
 app = Flask(__name__)
 
 app.config['SQLALCHEMY_TRACK_MODIFCATIONS'] = False
 app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///users.db'
 app.config['SQLALCHEMY_BINDS'] = {'posts': 'sqlite:///posts.db'}
-
 db = SQLAlchemy(app)
 
 
@@ -28,6 +26,27 @@ class Users(db.Model):
     password = Column('password', db.String(100), unique=True)
     karma = Column('Karma', db.Integer)
 
+    def __init__(self, userName, email, password, karma):
+        self.userName = userName
+        self.email = email
+        self.password = password
+        self.karma = karma
+
+
+class UserSchema(Schema):
+    id = fields.Int(dump_only=True)
+    userName = fields.Str()
+    email = fields.Str()
+    karma = fields.Int()
+    # formatted_name = fields.Method("format_name", dump_only=True)
+
+    def format_name(self, Users):
+        return "{},{},{}".format(Users.userName, Users.email, Users.karma)
+
+
+schema = UserSchema(many=True)
+userResult = schema.dump(Users.query.all())
+
 
 class Posts(db.Model):
     __bind_key__ = 'posts'
@@ -39,10 +58,21 @@ class Posts(db.Model):
     text = Column('text', db.String(100))
     Username = Column('Username', db.String(100))
     url = Column('url', db.String(100),  nullable=True)
+    dt = Column('dateTime', db.String(100))
 
-    # date = Column(datetime.time()(timezone=True), default=func.now())
-    # time_created = Column(datetime(timezone=True), server_default=func.now())
 
+class PostSchema(Schema):
+    id = fields.Int(dump_only=True)
+    title = fields.Str()
+    community = fields.Str()
+    Username = fields.Str()
+
+    def format_name(self, Posts):
+        return "{},{},{}".format(Posts.title, Posts.community, Posts.Username)
+
+
+Postschema = PostSchema(many=True)
+postResult = Postschema.dump(Posts.query.all())
 
 db.create_all()
 
@@ -57,6 +87,16 @@ def account():
     return render_template('signup.html')
 
 
+@app.route('/json/posts')
+def jsonPosts():
+    return jsonify(postResult)
+
+
+@app.route('/json/users')
+def jsonUsers():
+    return jsonify(userResult)
+
+
 @app.route('/createPost', methods=['GET', 'POST'])
 def createPost():
     postform = Posts()
@@ -66,14 +106,19 @@ def createPost():
         _text = request.form['text']
         _username = request.form['username']
         _url = request.form['url']
+        holder = datetime.now()
+        timeCreated = datetime.strftime(
+            holder, '%Y/%m/%d %H.%M%p')  # creates time as string
 
         new_post = Posts(title=_title, community=_community,
-                         text=_text, Username=_username, url=_url)
+                         text=_text, Username=_username, url=_url, dt=timeCreated)
         Account = Users.query.filter_by(userName=_username).first()
         if Account is not None:
             db.session.add(new_post)
             db.session.commit()
-            print("SUCCESXS")
+            postResult = Postschema.dump(Posts.query.all())
+            return jsonify(postResult)
+            print("SUCCESS")
         else:
             print("ERROR")
             return render_template('signup.html')
@@ -100,7 +145,8 @@ def deletePost():
                 db.session.delete(entry)
                 db.session.commit()
                 print("POST HAS BEEN DELETED")
-                return render_template('home.html')
+                postResult = Postschema.dump(Posts.query.all())
+                return jsonify(postResult)
             else:
                 print("NO SUCCESFUL DELETE CHECK FIELDS")
                 return render_template('deletepost.html')
@@ -119,19 +165,34 @@ def retrievePost():
 
         entry = Posts.query.filter_by(title=_title).all()
         entryCommunity = Posts.query.filter_by(community=_community).all()
+
+        yes = Posts.query.filter(Posts.title)
+
         sortedCategory = Posts.query.filter(
             and_(Posts.title == _title, Posts.community == _community)).all()
 
-        if _title == "":
-            print(entryCommunity)
-            return render_template('home.html')
+        fields = ['title', 'community', 'Username']
+        yes = Posts.query.options(load_only(*fields)).all()
 
-        if _community == "":
+        if _title == "" and _community == "":  # retrieve all posts
+            print(yes)
+            postResult = Postschema.dump(yes)
+            return jsonify(postResult)
+
+        if _title == "":  # if title entry is blank look at community and output those
+            print(entryCommunity)
+            postResult = Postschema.dump(entryCommunity)
+            return jsonify(postResult)
+
+        if _community == "":  # if community is blank output title entries
             print(entry)
-            return render_template('home.html')
+            postResult = Postschema.dump(entry)
+            return jsonify(postResult)
+
         else:
-            print(sortedCategory)
-            return render_template('signup.html')
+            print(sortedCategory)  # else both fields are filled in
+            postResult = Postschema.dump(sortedCategory)
+            return jsonify(postResult)
 
     return render_template('retrievePost.html')
 
@@ -158,6 +219,10 @@ def signup():
             session.add(new_user)
             session.commit()
             session.close()
+            schema = UserSchema()
+            result = schema.dump(Users.query.filter_by(
+                userName=_username).first())
+            return jsonify(result)
 
         except:
             print("Error in creating your acount, please try again")
@@ -197,15 +262,17 @@ def updateEmail():
         _password = request.form['password']
         new_email = request.form['email']
 
-        try:
-            userExists = Users.query.filter_by(userName=_username).first()
-            if userExists.userName == _username and userExists.password == _password:
-                userExists.email = new_email
-                db.session.commit()
-                print('Email has been updated')
-                return render_template('home.html')
+        userExists = Users.query.filter_by(userName=_username).first()
+        if userExists.userName == _username and userExists.password == _password:
+            userExists.email = new_email
+            db.session.commit()
+            print('Email has been updated')
+            schema = UserSchema()
+            result = schema.dump(Users.query.filter_by(
+                userName=_username).first())
+            return jsonify(result)
 
-        except:
+        else:
             print(
                 "Username and password not found or do not match please check credentials")
     return render_template('updateEmail.html')
@@ -222,7 +289,10 @@ def deleteAcc():
                 db.session.delete(userExists)
                 db.session.commit()
                 print('Account has been deleted')
-                return render_template('home.html')
+                schema = UserSchema()
+                result = schema.dump(Users.query.filter_by(
+                    userName=_username).first())
+                return jsonify(result)
 
         except:
             print(
