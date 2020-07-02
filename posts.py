@@ -121,7 +121,7 @@ def createPost():
             return jsonify(postResult)
 
         else:
-            print("ERROR")
+            print("yeet")
             return render_template('signup.html')
 
         return render_template('home.html')
